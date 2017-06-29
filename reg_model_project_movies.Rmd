@@ -1,0 +1,339 @@
+---
+title: "Modeling and prediction for movies"
+author: "kimnewzealand"
+date: "12 June 2017"
+output:
+  pdf_document: default
+  html_document:
+    fig_height: 4
+    highlight: pygments
+    theme: spacelab
+---
+
+## Setup
+
+### Load packages
+
+```{r load-packages, message = FALSE}
+library(ggplot2)
+library(dplyr)
+library(knitr)
+options(digits=3)
+```
+
+### Load data
+
+```{r load-data}
+setwd("~/LinRegProject")
+load("movies.Rdata")
+```
+
+* * *
+
+## Part 1: Data
+
+We will first take a look at the data structure of the datset.
+
+There are `r dim(movies)[1]` observations of randomly sampled movies produced and released in the year range `r range(movies$thtr_rel_year)` from Rotten Tomatoes and IMDb, and `r dim(movies)[2]` variables in the movies dataset. There are movies from `r str(movies$studio)` different studios.
+
+There is `r length(movies$title[duplicated(movies)])` duplicated movies in the dataset:
+`r movies$title[duplicated(movies)]` so we will keep only the unique records.
+
+```{r keepunique}
+# Keep unique records
+movies <- unique(movies)
+```
+
+
+**SAMPLING METHOD**
+
+The sources of the sample data, according to Wikipedia:
+
+* The Internet Movie Database (abbreviated IMDb) is a very large online database of information related to films.
+
+* Box Office Mojo - is a website that tracks box office revenue which was purchased by IMDb.
+
+* Rotten Tomatoes is an American review aggregator website for film and television.
+
+These sources are two representations of the population of movies in the US, therefore dependent.
+
+The sampling method is a simple random sample, selected randomly from dependent sources (IMDb and Rotten Tomatoes) with each having an equal probably of selection. The within sample responses can be assumed to be independent and less than 10% of the US population, which is in millions. Since this is not an experiment, random assignment was not used.
+
+This data is generalisable to population of movies in the US however it should not be used to establish causality.
+
+* * *
+
+## Part 2: Research question
+
+At Paramount pictures we are interested in the popularity of a movie, specifically what factors may influence the audience popularity rating to be considered in the planning of the next movie releases in order to boost box office sales.
+
+* * *
+
+## Part 3: Exploratory data analysis
+
+**OUTCOME VARIABLE**
+
+The following variables are measures of popularity, of which we will pick one for the outcome. There may be collinearity in that they are correlated. 
+
+We are given that the two Rotten Tomatoes ratings are categorical variables however we need further information on the other variables, and to check if there are any missing values:
+
+**iMDB popularity measures:**  
+- _imdb_rating_: Rating on IMDB. as per the website : We take all the individual votes cast by IMDb registered users and use them to calculate a single rating  
+- _imdb_num_votes_: Number of votes on IMDB  
+```{r summstats1, results = 'asis'}
+kable(t(as.matrix(summary(movies$imdb_rating))),format='pandoc')
+kable(t(as.matrix(summary(movies$imdb_num_votes))),format='pandoc')
+```
+
+**Rotten Tomatoes popularity measures:**  
+- critics_rating: Categorical variable for critics rating on Rotten Tomatoes (Certified - Fresh, Fresh, Rotten)  
+- critics_score: Critics score on Rotten Tomatoes  
+- audience_rating: Categorical variable for audience rating on Rotten Tomatoes (Spilled, Upright)  
+- audience_score: Audience score on Rotten Tomatoes  
+- top200_box: Whether or not the movie is in the Top 200 Box Office list on BoxOfficeMojo (no, yes)  
+```{r summstats2, results = 'asis'}
+kable(t(as.matrix(summary(movies$critics_rating))),format='pandoc')
+kable(t(as.matrix(summary(movies$critics_score))),format='pandoc')
+kable(t(as.matrix(summary(movies$audience_rating))),format='pandoc')
+kable(t(as.matrix(summary(movies$audience_score))),format='pandoc')
+```
+
+The _critics_rating_ and _audience_rating_ are categorical summaries of the _critics_score_ and _audience_score_. The _imdb_rating_ is a also a summary of _imdb_num_votes_. The _top200_box_ is categorical whereas we will need a numerical prediction.
+Therefore we will look at visual summaries of the other 3 measures, _imdb_rating_, _critics_score_ and _audience_score_.
+
+```{r imdbrating}
+# View the IMDb rating against the genre in a boxplot, with a horozontal line plotted for mean imdb rating
+g <- ggplot(movies,aes(genre,imdb_rating))
+g + geom_boxplot(aes(fill=title_type)) + 
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=1)) + 
+  geom_hline(yintercept=mean(movies$imdb_rating),aes(color=blue))
+```
+
+```{r criticscore}
+# View the Rotten Tomatoes criticss score against the genre and title type in a boxplot with a horozontal line plotted for mean critics score
+g <- ggplot(movies,aes(genre,critics_score))
+g + geom_boxplot(aes(fill=title_type)) + 
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=1)) +
+  geom_hline(yintercept=mean(movies$critics_score),aes(color=blue))
+```
+
+```{r audiencescore}
+# View the Rotten Tomatoes audience score against the genre in a boxplot
+g <- ggplot(movies,aes(genre,audience_score))
+g + geom_boxplot(aes(fill=title_type)) + 
+  theme(axis.text.x = element_text(angle=90,hjust=1,vjust=1)) +
+  geom_hline(yintercept=mean(movies$audience_score),aes(color=blue))
+```
+  
+These three plots, _audience_score_, _critics_score_ and _imdb rating_ are very similar plot by genre and title type therefore appear correlated but the variability is higher for _critics_score_, then the _audience_score_ then the _imdb_rating_.  We will use the *_imdb_rating_* with the least variability as this may have better predictive value.
+
+```{r moviehist,fig_height=2,fig_width=3}
+# Plot a histogram of the movie releases by year
+g <- ggplot(movies,aes(thtr_rel_year))
+g + geom_histogram(binwidth=2,fill="pink",colour="black")+
+   labs(title="Histogram of the Theatre Releases by Year", x="Genre",y="Count")
+```
+  
+The number of movies by the theatre release year has a left skew and not normally distributed ie the number of releases have generally increased year to year.
+
+```{r removevariables}
+# Remove descriptive variables title,imdb_url , rt_url ; the duplicated  critics_rating and audience_ratings and imdb_num_votes. To avoid overfitting remove critics_score, audience_score which are correlated with imdb_rating. Ignore and remove categorical variables with very large number of observations studio, director, actor1, actor2, actor3, actor4, actor5. For the director and actor variables.
+movies2 <- movies %>% 
+  select(-c(title,imdb_url ,critics_rating,audience_rating, critics_score,audience_score, imdb_num_votes, rt_url, studio,director, actor1, actor2, actor3, actor4, actor5) )
+```
+We will consider thtr_rel_month and dvd_rel_month as categorical variables to explore seasonal variations in the data.
+
+We consider thtr_rel_month and dvd_rel_month as a categorical variable as it may explain seasonal variations within the data.
+
+```{r}
+month <- c('Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec')
+movies2['thtr_rel_month'] <- factor(movies2$thtr_rel_month, labels=month)
+movies2['dvd_rel_month'] <- factor(movies2$dvd_rel_month, labels=month)
+# Plot the theatre release month counts
+g <- ggplot(movies, aes(thtr_rel_month))
+g+ geom_bar(color='black',fill='pink')+labs(title = "Counts for each theatre release month", x = "Theatre release month", y = "count")
+# Plot the DVD release month counts
+g <- ggplot(movies, aes(dvd_rel_month))
+g + geom_bar(color='black',fill='pink')+labs(title = "Counts for each dvd release month", x = "DVD release month", y = "count")
+```
+  
+There may be some seasonality to the months of release in theatres and on DVD.
+
+* * *
+
+## Part 4: Modeling
+
+The method that we will use is Multivariate Linear Regression to predict a numerical variable in the dataset using the relevant plots and statistics.
+
+First we set the hypothesis test for the model as a whole:
+
+The null hypothesis $H_0 : \beta_1 = \beta_i...= \beta_k = 0$ that at no explanatory variables are a significant predictor of the outcome.
+
+The alternative hypothesis $H_A :$  at least one $\beta_k$ is different to 0, and a explanatory variable is a significant predictor.
+
+We  will use a stepwise backwards model selection, reviewing the p-values of the coefficients  and adjusted R-squared. 
+
+```{r full model}
+# Summary of the full model:
+model1 <- lm(imdb_rating ~ .,movies2)
+summary(model1)
+```
+
+The full model adjusted R-squared is `r summary(model1)$adj.r.squared`.
+
+```{r stepbackwards}
+# Model removing title_type 
+model2 <- lm(imdb_rating ~  . - title_type,movies2)
+summary(model2)$adj.r.squared
+
+# Model removing the genre
+model3 <- lm(imdb_rating ~ .-genre ,movies)
+summary(model3)$adj.r.squared
+
+# Model removing the runtime
+model4 <- lm(imdb_rating ~ .-runtime ,movies2)
+summary(model4)$adj.r.squared
+
+# Model removing the thtr_rel_year
+model5 <- lm(imdb_rating ~ .-thtr_rel_year ,movies2)
+summary(model5)$adj.r.squared
+
+# Model removing the thtr_rel_month 
+model6 <- lm(imdb_rating ~ .-thtr_rel_month ,movies2)
+summary(model6)$adj.r.squared
+
+# Model removing the dvd_rel_year 
+model7 <- lm(imdb_rating ~ .-dvd_rel_year ,movies2)
+summary(model7)$adj.r.squared
+
+# Model removing the thtr_rel_day 
+model8 <- lm(imdb_rating ~ .-thtr_rel_day  ,movies2)
+summary(model8)$adj.r.squared
+
+# Model removing the dvd_rel_month 
+model9 <- lm(imdb_rating ~ .-dvd_rel_month  ,movies2)
+summary(model9)$adj.r.squared
+
+# Model removing the dvd_rel_day
+model10 <- lm(imdb_rating ~ .-dvd_rel_day ,movies2)
+summary(model10)$adj.r.squared
+
+# Model removing the best_pic_nom 
+model11 <- lm(imdb_rating ~ .-best_pic_nom  ,movies2)
+summary(model11)$adj.r.squared
+
+# Model removing the best_pic_win 
+model12 <- lm(imdb_rating ~ .-best_pic_win  ,movies2)
+summary(model12)$adj.r.squared
+
+# Model removing the best_actor_win 
+model13 <- lm(imdb_rating ~ .-best_actor_win ,movies2)
+summary(model13)$adj.r.squared
+
+# Model removing the best_actress_win 
+model14 <- lm(imdb_rating ~ .-best_actress_win ,movies2)
+summary(model14)$adj.r.squared
+
+# Model removing the best_dir_win  
+model15 <- lm(imdb_rating ~ .-best_dir_win  ,movies2)
+summary(model15)$adj.r.squared
+
+# Model removing the  top200_box
+model16 <- lm(imdb_rating ~ .-top200_box ,movies2)
+summary(model16)$adj.r.squared
+```
+We will remove the predictors that reduce the adjusted R-Squared and come up with a final model with the with the highest adjusted R-Squared.
+
+```{r finalmodel, format="asis"}
+# Final linear model
+modelfinal <- lm(imdb_rating ~ title_type + genre + runtime  + mpaa_rating + thtr_rel_month + dvd_rel_year +  dvd_rel_month  + best_pic_nom +  best_dir_win + top200_box, movies2)
+summary(modelfinal)
+```
+
+In order to perform diagnostics for this model, check the following conditions:
+
+1) Linear relationship between each (numerical) explanatory variable
+
+```{r residual plot modelfinal runtime,fig_height=2,fig_width=3}
+# Check the residuals plot of each of the numerical variables, runtime 
+g <- ggplot(modelfinal,aes(x=runtime,y=.resid))  
+g + geom_point()+
+  geom_hline(yintercept=0)
+
+```
+  
+These residuals are scattered around 0 so this condition is met.
+
+2)  Nearly normal distribution of residuals 
+```{r normalresiduals, fig_height=2,fig_width=3}
+# Check using a histogram of the residuals
+g <- ggplot(modelfinal,aes(.resid))  
+g + geom_histogram()
+```
+```{r qqplot , fig_height=2,fig_width=3}
+# Check using a QQ plot the MLR:
+g <- ggplot(modelfinal,aes(sample= .resid))  
+g + stat_qq()
+```
+   
+The histogram plot has an almost normal distribution, but we can say that this condition is met.
+
+
+3) Constant variability of residuals
+```{r scatterfitted , fig_height=2,fig_width=3}
+# Check using a scatterplot of the fitted values against the residuals
+g <- ggplot(modelfinal,aes(y=.resid,x=.fitted))  
+g + geom_point()
+```
+   
+Since these are randomly scattered around 0, with some uncertainty where the fan is wider, but this condition is met.
+
+4) Independence of residuals (and hence observations) 
+```{r scatterresiduals, , fig_height=2,fig_width=3}
+# Check using a scatterplot of the residuals versus order of data collection
+plot(modelfinal$residuals)
+```
+  
+There are no patterns therefore this condition appears to be met.
+
+* * *
+
+## Part 5: Prediction
+
+We will use the move 2016 La La Land sourced manually the Rotten Tomatoes and iMDB websites.
+https://www.rottentomatoes.com/m/la_la_land/  
+http://www.imdb.com/title/tt3783958/
+
+Note that this has Genre: Comedy, Drama, Musical & Performing Arts, and we only have 1 field for Genre. For this prediction we will use Musical & Performing Arts.
+
+```{r}
+# Create a dataframe for 2016 movie La La Land from the Rotten tomates and iMDB websites
+LaLaLand <- c("Feature Film","Musical & Performing Arts",128,"PG-13",2016,"Dec",9,2017,"Apr",25,8.2,"yes","no","no","yes","yes","yes")
+LaLaLand <- as.data.frame((t(LaLaLand)),stringsAsFactors = FALSE)
+names(LaLaLand) <- names(movies2)
+LaLaLand$runtime <- as.numeric(LaLaLand$runtime)
+LaLaLand$thtr_rel_year <- as.numeric(LaLaLand$thtr_rel_year)
+LaLaLand$thtr_rel_day <- as.numeric(LaLaLand$thtr_rel_day)
+LaLaLand$dvd_rel_year <- as.numeric(LaLaLand$dvd_rel_year)
+LaLaLand$dvd_rel_day <- as.numeric(LaLaLand$dvd_rel_day)
+LaLaLand$imdb_rating <- as.numeric(LaLaLand$imdb_rating)
+```
+We can predict the iMDB rating with  a confidence interval for each of the slope parameter of each predictor: $\beta_k$ which would interpret as 95% confident that, all else being equal, the model predicts the iMDB rating.
+
+```{r}
+# Predict the imdb_rating
+predict(modelfinal,LaLaLand,interval='prediction',level=0.95)
+```
+
+* * *
+
+## Part 6: Conclusion
+
+As the F statistic p-value is < 5% we can reject the null hypothesis in favour of the alternate hypothesis, there is more than one $\beta_k$ that is significant predictor of popularity of a movie, the iMDB rating. 
+A multivariate linear model was created and the conditions were checked and met for this model.  
+
+In using this model to predict a iMDB rating for a 2016 movie La La Land, the prediction `r round(predict(modelfinal,LaLaLand),2)` compared to the current  rating  `r LaLaLand$imdb_rating`.
+
+However this movie was categorised under multiple genres  "Comedy, Drama, Musical & Performing Arts"  in Rotten Tomatoes, so the prediction value would vary by the selected  single Genre field. Alternatively the source dataset could be further enhanced with multiple genre fields.
+
+Interestingly, the timing of theatre and DVD release was included as a factor therefore in addition to the other factors, these release dates should be considered when planning the next movie to boost box office sales.
